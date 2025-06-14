@@ -1,0 +1,41 @@
+/* frontend/src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Leaflet specific overrides to ensure they are below high z-index modals */
+
+/* The main map container should ideally not need a forced low z-index if its children are managed,
+   but if all else fails, you could try giving .leaflet-container a z-index like 1.
+   However, start with managing its internal panes.
+*/
+
+/* Control containers (for zoom, attribution etc.) */
+.leaflet-control-container .leaflet-top,
+.leaflet-control-container .leaflet-bottom {
+  z-index: 990 !important; /* << Critically, less than your modal's 1000 (or 2000 if you used that) */
+}
+
+/* Popups on markers - should be above markers and tiles, but below main app modals */
+.leaflet-popup-pane {
+  z-index: 995 !important; /* Higher than controls, but still just below a z-1000 modal */
+}
+
+/* Other map panes, ensuring they are layered correctly under popups and controls */
+.leaflet-tooltip-pane {
+  z-index: 650 !important;
+}
+.leaflet-marker-pane { /* Markers themselves */
+  z-index: 600 !important;
+}
+.leaflet-shadow-pane { /* Marker shadows */
+  z-index: 500 !important;
+}
+.leaflet-tile-pane { /* Map tiles, should be lowest among interactive elements */
+  z-index: 200 !important; /* Default is often 2, this ensures it's explicitly managed */
+}
+
+/* If you use .leaflet-pane for any custom overlays directly */
+.leaflet-pane.leaflet-overlay-pane {
+    z-index: 400 !important;
+}
