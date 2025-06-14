@@ -27,12 +27,20 @@ except Exception as e:
 
 app = FastAPI()
 
+# --- CORS Middleware (allows frontend to talk to backend) ---
+# Define your allowed origins
+origins = [
+    "http://localhost:3000",              # Your local frontend for development
+    "https://sparkathon-blue.vercel.app"  # YOUR DEPLOYED VERCEL FRONTEND URL
+    # You can add more origins here if needed, e.g., other preview URLs from Vercel
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=origins, # Use the list of origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Allows all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"], # Allows all headers
 )
 
 # --- Pydantic Models ---
@@ -54,7 +62,7 @@ class InventoryItem(InventoryItemCreate):
     expiryDate: str
     status: str
     productName: str
-    unit: str # <<<<<<<<<<<<<<<< MODIFIED HERE
+    unit: str
 
 class SurplusCrateItem(BaseModel):
     productId: str
@@ -147,7 +155,7 @@ async def create_inventory_item(item_data: InventoryItemCreate):
         "expiryDate": expiry_date,
         "status": status,
         "productName": product.name,
-        "unit": product.unit # <<<<<<<<<<<<<<<< MODIFIED HERE
+        "unit": product.unit
     })
     final_inventory_item = InventoryItem(**inventory_item_dict)
     new_item_ref.set(final_inventory_item.dict())
@@ -162,15 +170,14 @@ async def get_at_risk_inventory(store_id: str):
         item_dict = item_doc.to_dict()
         item_dict["inventoryItemId"] = item_doc.id
         current_status = get_inventory_status(item_dict["expiryDate"])
-        if item_dict["status"] != current_status: # Update only if changed
+        if item_dict["status"] != current_status:
             item_dict["status"] = current_status
             db.collection("inventoryItems").document(item_doc.id).update({"status": current_status})
 
-        # Add unit from MOCK_PRODUCTS
         parent_product_id = item_dict.get("productId")
         parent_product = MOCK_PRODUCTS.get(parent_product_id)
         if parent_product:
-            item_dict["unit"] = parent_product.unit # <<<<<<<<<<<<<<<< MODIFIED HERE
+            item_dict["unit"] = parent_product.unit
         else:
             item_dict["unit"] = "unknown"
             print(f"Warning: Product {parent_product_id} not in MOCK_PRODUCTS for item {item_doc.id}")
@@ -183,8 +190,6 @@ async def get_at_risk_inventory(store_id: str):
             print(f"Skipping item {item_doc.id} due to validation error: {e}, data: {item_dict}")
     return sorted(at_risk_items, key=lambda x: x.expiryDate)
 
-# ... (SurplusCrate, LocalBusiness, Offer endpoints remain the same as your last correct version) ...
-# === SURPLUS CRATE ENDPOINTS ===
 @app.post("/api/surplus_crates", response_model=SurplusCrate, status_code=201)
 async def create_surplus_crate(crate_data: SurplusCrateCreate):
     if not db: raise HTTPException(status_code=503, detail="Firebase not connected")
@@ -227,7 +232,6 @@ async def get_available_surplus_crates():
         available_crates_list.append(SurplusCrate(**crate_dict))
     return available_crates_list
 
-# === LOCAL BUSINESS ENDPOINTS ===
 @app.post("/api/local_businesses", response_model=LocalBusiness, status_code=201)
 async def create_local_business(business_data: LocalBusinessCreate):
     if not db: raise HTTPException(status_code=503, detail="Firebase not connected")
@@ -238,38 +242,22 @@ async def create_local_business(business_data: LocalBusinessCreate):
     new_biz_ref.set(final_biz.dict())
     return final_biz
 
-# backend/main.py
-# ... (other code remains the same) ...
-
 @app.get("/api/local_businesses", response_model=List[LocalBusiness])
 async def get_local_businesses_list():
     if not db: raise HTTPException(status_code=503, detail="Firebase not connected")
     businesses_ref = db.collection("localBusinesses").stream()
-    
     processed_businesses = []
     for doc in businesses_ref:
         data = doc.to_dict()
-        # Ensure the document ID from Firestore is used as the 'businessId'
-        # for the Pydantic model. This overrides any 'businessId' that might
-        # already be in 'data' from doc.to_dict(), preventing the error.
-        data['businessId'] = doc.id 
-        
-        # Ensure all other required fields for LocalBusiness model are present,
-        # with defaults if necessary (though your LocalBusiness model looks straightforward).
-        # Example: data.setdefault('preferences', []) if preferences could be missing
-
+        data['businessId'] = doc.id
         try:
             processed_businesses.append(LocalBusiness(**data))
         except Exception as e:
             print(f"Error validating/creating LocalBusiness Pydantic model for doc {doc.id}: {e}")
             print(f"Problematic data: {data}")
-            continue # Skip this business and continue with the next
-            
+            continue
     return processed_businesses
 
-# ... (rest of your main.py code) ...
-
-# === OFFER ENDPOINTS ===
 @app.post("/api/surplus_crates/{crate_id}/offers", response_model=Offer, status_code=201)
 async def make_offer_on_crate(crate_id: str, offer_data: OfferCreate):
     if not db: raise HTTPException(status_code=503, detail="Firebase not connected")
@@ -332,28 +320,18 @@ async def respond_to_offer(crate_id: str, offer_id: str, response_status: str):
     current_offer_status = current_offer_data.get("status")
     if current_offer_status != "pending":
         raise HTTPException(status_code=400, detail=f"Offer is not pending (status: {current_offer_status})")
-
-    # Start Firestore transaction for atomicity (optional but recommended for production)
-    # For prototype, we'll do sequential updates.
-    # transaction = db.transaction()
-    # @firestore.transactional
-    # async def update_in_transaction(transaction, crate_ref, offer_ref, ....):
-    #    # all reads and writes using transaction object
     
-    # Perform the update to the offer status in Firestore
     offer_ref.update({"status": response_status})
     
     if response_status == "accepted":
-        crate_data_for_inventory_update = crate_doc_snapshot.to_dict() # Get crate data before updating its status
+        crate_data_for_inventory_update = crate_doc_snapshot.to_dict()
 
-        # Update crate status to "sold" and store buyer info
         crate_ref.update({
             "status": "sold",
             "soldToBusinessId": current_offer_data.get("businessId"),
             "finalPrice": current_offer_data.get("offerPrice")
         })
 
-        # --- BEGIN INVENTORY ADJUSTMENT LOGIC ---
         try:
             crate_items_sold = crate_data_for_inventory_update.get("items", [])
             store_id_of_crate = crate_data_for_inventory_update.get("storeId")
@@ -372,10 +350,6 @@ async def respond_to_offer(crate_id: str, offer_id: str, response_status: str):
 
                     print(f"  Processing sold item: Product ID {product_id_to_adjust}, Quantity Sold: {quantity_sold_from_crate}")
 
-                    # Query for inventory items of this product in the specific store,
-                    # ordered by expiryDate to decrement from the oldest stock first.
-                    # This query REQUIRES a composite index in Firestore on inventoryItems:
-                    # Fields: productId (ASC/DESC), storeId (ASC/DESC), quantity (>, ASC/DESC), expiryDate (ASC)
                     inventory_items_query = db.collection("inventoryItems") \
                         .where("productId", "==", product_id_to_adjust) \
                         .where("storeId", "==", store_id_of_crate) \
@@ -383,29 +357,23 @@ async def respond_to_offer(crate_id: str, offer_id: str, response_status: str):
                         .order_by("expiryDate", direction=firestore.Query.ASCENDING)
                     
                     inventory_batches_stream = inventory_items_query.stream()
-                    
                     remaining_quantity_to_decrement = quantity_sold_from_crate
                     adjusted_from_any_batch = False
 
                     for inv_batch_doc in inventory_batches_stream:
-                        if remaining_quantity_to_decrement <= 0:
-                            break # All sold quantity for this product type has been accounted for
-
+                        if remaining_quantity_to_decrement <= 0: break
                         inv_batch_data = inv_batch_doc.to_dict()
                         current_batch_quantity = inv_batch_data.get("quantity", 0)
-                        
                         print(f"    Found inventory batch: {inv_batch_doc.id} (Product: {product_id_to_adjust}), Current Qty: {current_batch_quantity}")
 
                         if current_batch_quantity >= remaining_quantity_to_decrement:
-                            # This batch can cover the remaining sold quantity (or more)
                             new_batch_quantity = current_batch_quantity - remaining_quantity_to_decrement
                             inv_batch_doc.reference.update({"quantity": new_batch_quantity})
                             print(f"      Decremented batch {inv_batch_doc.id} by {remaining_quantity_to_decrement}. New Qty: {new_batch_quantity}")
                             remaining_quantity_to_decrement = 0
                             adjusted_from_any_batch = True
-                            break # Done with this product from the crate
+                            break
                         else:
-                            # This batch will be fully depleted
                             inv_batch_doc.reference.update({"quantity": 0})
                             remaining_quantity_to_decrement -= current_batch_quantity
                             print(f"      Depleted batch {inv_batch_doc.id} (Used: {current_batch_quantity}). Still need to decrement: {remaining_quantity_to_decrement}")
@@ -414,46 +382,32 @@ async def respond_to_offer(crate_id: str, offer_id: str, response_status: str):
                     if not adjusted_from_any_batch:
                         print(f"  WARNING: No matching inventory batches with quantity > 0 found for Product ID {product_id_to_adjust} in store {store_id_of_crate}.")
                     elif remaining_quantity_to_decrement > 0:
-                        print(f"  WARNING: Could not fully decrement inventory for Product ID {product_id_to_adjust}. Amount sold from crate: {quantity_sold_from_crate}. Amount remaining unadjusted: {remaining_quantity_to_decrement} (likely insufficient stock across all batches).")
+                        print(f"  WARNING: Could not fully decrement inventory for Product ID {product_id_to_adjust}. Amount sold: {quantity_sold_from_crate}. Unadjusted: {remaining_quantity_to_decrement}.")
             
             print(f"--- Inventory Adjustment Finished for Crate: {crate_id} ---")
 
         except Exception as e_inv_adj:
-            # Log this error but don't let it break the main offer response flow if possible
             print(f"CRITICAL ERROR during inventory adjustment for crate {crate_id}: {e_inv_adj}")
-        # --- END INVENTORY ADJUSTMENT LOGIC ---
 
-        # Auto-reject other pending offers for this crate
         other_offers_query = crate_ref.collection("offers").where("status", "==", "pending")
         for other_offer_doc_snapshot in other_offers_query.stream():
             if other_offer_doc_snapshot.id != offer_id:
                 other_offer_doc_snapshot.reference.update({"status": "rejected"})
     
-    # Fetch the offer document AGAIN after all updates to get its latest state for the response
     updated_offer_doc_snapshot = offer_ref.get()
     if not updated_offer_doc_snapshot.exists:
         raise HTTPException(status_code=500, detail="Failed to retrieve updated offer details after processing.")
 
     response_data = updated_offer_doc_snapshot.to_dict()
-    response_data['offerId'] = updated_offer_doc_snapshot.id # Ensure correct ID for Pydantic model
+    response_data['offerId'] = updated_offer_doc_snapshot.id
 
-    # Ensure all other fields required by Pydantic 'Offer' model are present for robustness
-    response_data.setdefault('status', response_status) # Should be accurate from the update
-    response_data.setdefault('offeredAt', current_offer_data.get('offeredAt', datetime.utcnow().isoformat())) # Keep original
-    response_data.setdefault('businessId', current_offer_data.get('businessId')) # Keep original
-    response_data.setdefault('offerPrice', current_offer_data.get('offerPrice')) # Keep original
+    response_data.setdefault('status', response_status)
+    response_data.setdefault('offeredAt', current_offer_data.get('offeredAt', datetime.utcnow().isoformat()))
+    response_data.setdefault('businessId', current_offer_data.get('businessId'))
+    response_data.setdefault('offerPrice', current_offer_data.get('offerPrice'))
 
     try:
         return Offer(**response_data)
     except Exception as e_resp:
         print(f"Error creating Pydantic Offer model for response: {e_resp}, data: {response_data}")
         raise HTTPException(status_code=500, detail=f"Error preparing response data: {e_resp}")
-    
-# naman@DESKTOP-A9LSRBI MINGW64 ~/Desktop/Walmart Sparkathon
-# $ cd backend/
-
-# naman@DESKTOP-A9LSRBI MINGW64 ~/Desktop/Walmart Sparkathon/backend
-# $ source venv/Scripts/activate
-# (venv) 
-# naman@DESKTOP-A9LSRBI MINGW64 ~/Desktop/Walmart Sparkathon/backend
-# $ uvicorn main:app --reload
